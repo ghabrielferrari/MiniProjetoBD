@@ -1,4 +1,5 @@
 import base64
+import os
 from Cryptodome.Cipher import AES
 from Cryptodome.Util.Padding import pad, unpad
 from Cryptodome.Random import get_random_bytes
@@ -6,79 +7,72 @@ from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 import hashlib
 
-# Conexão com MongoDB
-uri = "mongodb+srv://gabriel:gabriel123@consultas.bpjd6.mongodb.net/?retryWrites=true&w=majority&appName=Consultas"
-client = MongoClient(uri, server_api=ServerApi('1'))
-
-# Escolhe a base de dados e coleção
+# Conexão com o MongoDB
+client = MongoClient("mongodb+srv://gabriel:gabriel123@consultas.bpjd6.mongodb.net/?retryWrites=true&w=majority")
 db = client['Consultas']
 messages_collection = db['messages']
 
-# Função para gerar chave secreta a partir de uma senha
 def generate_key(password, salt):
-    key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
-    return key
+    """Gera uma chave a partir da senha e salt usando SHA-256."""
+    return hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
 
-# Função para criptografar mensagem
 def encrypt_message(message, password):
-    salt = get_random_bytes(16)
+    """Cifra a mensagem usando AES CBC."""
+    salt = os.urandom(16)
     key = generate_key(password, salt)
     cipher = AES.new(key, AES.MODE_CBC)
-    iv = cipher.iv
-    encrypted_message = cipher.encrypt(pad(message.encode(), AES.block_size))
+    ciphertext = cipher.encrypt(pad(message.encode(), AES.block_size))
     return {
-        'message': base64.b64encode(encrypted_message).decode('utf-8'),
-        'nonce': base64.b64encode(iv).decode('utf-8'),
-        'salt': base64.b64encode(salt).decode('utf-8')
+        'message': base64.b64encode(ciphertext).decode(),
+        'nonce': base64.b64encode(cipher.iv).decode(),
+        'salt': base64.b64encode(salt).decode()
     }
 
-# Função para descriptografar mensagem
 def decrypt_message(encrypted_data, password):
+    """Decifra a mensagem cifrada."""
     try:
-        # Verifica se a mensagem possui os campos necessários
-        if 'salt' not in encrypted_data or 'nonce' not in encrypted_data or 'message' not in encrypted_data:
-            print("Erro: Mensagem sem informações necessárias para decifrar.")
-            return None
-
-        salt = base64.b64decode(encrypted_data['salt'])
-        iv = base64.b64decode(encrypted_data['nonce'])
-        encrypted_message = base64.b64decode(encrypted_data['message'])
-        key = generate_key(password, salt)
-        cipher = AES.new(key, AES.MODE_CBC, iv)
-        decrypted_message = unpad(cipher.decrypt(encrypted_message), AES.block_size)
-        return decrypted_message.decode('utf-8')
-
-    except (KeyError, ValueError, TypeError, base64.binascii.Error) as e:
-        print(f"Erro ao decifrar a mensagem: {str(e)}")
+        key = generate_key(password, base64.b64decode(encrypted_data['salt']))
+        cipher = AES.new(key, AES.MODE_CBC, iv=base64.b64decode(encrypted_data['nonce']))
+        return unpad(cipher.decrypt(base64.b64decode(encrypted_data['message'])), AES.block_size).decode()
+    except:
         return None
 
-# Função para inserir mensagem no banco de dados
 def insert_message(from_user, to_user, message, password):
+    """Insere uma nova mensagem no banco de dados."""
     encrypted_data = encrypt_message(message, password)
-    encrypted_data['from'] = from_user
-    encrypted_data['to'] = to_user
-    messages_collection.insert_one(encrypted_data)
-    print(f"Mensagem de {from_user} para {to_user} inserida com sucesso.")
+    messages_collection.insert_one({'from': from_user, 'to': to_user, **encrypted_data})
+    print("Mensagem de {} para {} inserida.".format(from_user, to_user))
 
-# Função para buscar e decifrar mensagens de um destinatário
 def fetch_messages(to_user, password):
-    messages = messages_collection.find({'to': to_user})
-    for message in messages:
-        decrypted_message = decrypt_message(message, password)
-        if decrypted_message:
-            print(decrypted_message)
+    """Busca mensagens destinadas a um usuário e tenta decifrá-las."""
+    for message in messages_collection.find({'to': to_user}):
+        decrypted = decrypt_message(message, password)
+        print(decrypted if decrypted else "Erro ao decifrar a mensagem.")
 
-# Main
-try:
-    client.admin.command('ping')
-    print("Pinged your deployment. You successfully connected to MongoDB!")
-except Exception as e:
-    print(e)
+# Exemplo de uso
+if __name__ == "__main__":
+    print("Conectado ao MongoDB!")
+    while True:
+        print("\n1. Enviar mensagem")
+        print("2. Ver mensagens")
+        print("3. Sair")
+        option = input("Escolha uma opção: ")
 
-# Insere mensagem de Alice para Bob
-password = input("Digite a chave secreta para o chat: ")
-insert_message('Alice', 'Bob', "Olá Bob, fez o dever de casa?", password)
+        if option == '1':
+            sender = input("De: ")
+            receiver = input("Para: ")
+            message = input("Mensagem: ")
+            password = input("Senha: ")
+            insert_message(sender, receiver, message, password)
 
-# Busca mensagens para Bob
-print("\nMensagens para Bob:")
-fetch_messages('Bob', password)
+        elif option == '2':
+            receiver = input("Ver mensagens de: ")
+            password = input("Senha: ")
+            fetch_messages(receiver, password)
+
+        elif option == '3':
+            print("Saindo...")
+            break
+
+        else:
+            print("Opção inválida")
